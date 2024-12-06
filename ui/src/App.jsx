@@ -1,6 +1,6 @@
-import { useState } from "react";
-import * as React from "react";
-import { id, Interface, Contract, BrowserProvider } from "ethers";
+import { useState, useEffect } from "react";
+import { Contract, BrowserProvider } from "ethers";
+import { id } from "@ethersproject/hash";
 
 import {
   CertAddr,
@@ -13,237 +13,299 @@ import { abi as Certabi } from "./contract-data/Cert.json";
 import { abi as TokenAbi } from "./contract-data/GovToken.json";
 import { abi as TimeLockAbi } from "./contract-data/TimeLock.json";
 
-import AppBar from "@mui/material/AppBar";
-import Box from "@mui/material/Box";
-import Toolbar from "@mui/material/Toolbar";
-import Typography from "@mui/material/Typography";
-import Button from "@mui/material/Button";
-import IconButton from "@mui/material/IconButton";
-import MenuIcon from "@mui/icons-material/Menu";
+// MUI Components
+import {
+  AppBar,
+  Box,
+  Toolbar,
+  Typography,
+  Button,
+  Container,
+  Paper,
+  Grid,
+  TextField,
+  Dialog,
+  DialogActions,
+  DialogContent,
+  DialogContentText,
+  DialogTitle,
+  Card,
+  CardContent,
+  CardActions,
+  Chip,
+  Alert,
+  CircularProgress,
+  Select,
+  MenuItem,
+  FormControl,
+  InputLabel,
+  Tabs,
+  Tab,
+  Divider,
+} from "@mui/material";
 
-import Accordion from "@mui/material/Accordion";
-import AccordionSummary from "@mui/material/AccordionSummary";
-import AccordionDetails from "@mui/material/AccordionDetails";
-import ArrowDownwardIcon from "@mui/icons-material/ArrowDownward";
-
-import Card from "@mui/material/Card";
-import CardActions from "@mui/material/CardActions";
-import CardContent from "@mui/material/CardContent";
-
-import Chip from "@mui/material/Chip";
-
-import { experimentalStyled as styled } from "@mui/material/styles";
-import Paper from "@mui/material/Paper";
-import Grid from "@mui/material/Grid";
-
-import TextField from "@mui/material/TextField";
-import Dialog from "@mui/material/Dialog";
-import DialogActions from "@mui/material/DialogActions";
-import DialogContent from "@mui/material/DialogContent";
-import DialogContentText from "@mui/material/DialogContentText";
-import DialogTitle from "@mui/material/DialogTitle";
-
-import MenuItem from "@mui/material/MenuItem";
-import Select from "@mui/material/Select";
+function TabPanel({ children, value, index }) {
+  return (
+    <div hidden={value !== index} style={{ padding: '20px 0' }}>
+      {value === index && children}
+    </div>
+  );
+}
 
 function App() {
-  const [loginState, setLoginState] = useState("Connect");
-  const [proposals, setProposals] = useState([['No Proposals', '']]);
-  const [pDescription, setPDescription] = useState('');
-  const [userAddress, setUserAddress] = useState('');
+  // State variables
+  const [loginState, setLoginState] = useState("Connect Wallet");
+  const [userAddress, setUserAddress] = useState("");
   const [isAdmin, setIsAdmin] = useState(false);
-  const [mintAmount, setMintAmount] = useState('');
-  const [delegateAddress, setDelegateAddress] = useState('');
-  const [proposerRole, setProposerRole] = useState('');
-  const [executorRole, setExecutorRole] = useState('');
-  const [selectedProposal, setSelectedProposal] = useState(null);
-  const [voteType, setVoteType] = useState(0); // 0 for against, 1 for for, 2 for abstain
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+  const [success, setSuccess] = useState("");
+  const [tabValue, setTabValue] = useState(0);
+
+  // Token Management
+  const [mintAmount, setMintAmount] = useState("");
+  const [mintToAddress, setMintToAddress] = useState("");
+  const [delegateAddress, setDelegateAddress] = useState("");
+  const [tokenBalance, setTokenBalance] = useState("0");
+
+  // Role Management
+  const [proposerRole, setProposerRole] = useState("");
+  const [executorRole, setExecutorRole] = useState("");
+
+  // Proposal Management
+  const [proposals, setProposals] = useState([]);
+  const [newProposalOpen, setNewProposalOpen] = useState(false);
+  const [proposalDescription, setProposalDescription] = useState("");
+  const [proposalFunction, setProposalFunction] = useState("");
+  const [proposalParams, setProposalParams] = useState("");
+
+  // Certificate Management
   const [certificates, setCertificates] = useState([]);
 
   const provider = new BrowserProvider(window.ethereum);
-  console.log("Provider:", provider);
 
-  // Token Management Functions
+  // Connect Wallet
+  const connectWallet = async () => {
+    try {
+      setLoading(true);
+      const signer = await provider.getSigner();
+      const address = await signer.getAddress();
+      setUserAddress(address);
+      setLoginState("Connected: " + address.slice(0, 6) + "..." + address.slice(-4));
+      await checkAdminStatus(address);
+      await getTokenBalance(address);
+      setSuccess("Wallet connected successfully!");
+    } catch (err) {
+      setError("Failed to connect wallet: " + err.message);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // Token Functions
   const mintTokens = async () => {
     try {
+      setLoading(true);
       const signer = await provider.getSigner();
       const tokenContract = new Contract(GovTokenAddr, TokenAbi, signer);
-      const tx = await tokenContract.mint(userAddress, mintAmount);
+      const tx = await tokenContract.mint(mintToAddress || userAddress, mintAmount);
       await tx.wait();
-      alert('Tokens minted successfully!');
-    } catch (error) {
-      alert('Error minting tokens: ' + error.message);
+      setSuccess("Tokens minted successfully!");
+      await getTokenBalance(userAddress);
+    } catch (err) {
+      setError("Failed to mint tokens: " + err.message);
+    } finally {
+      setLoading(false);
     }
   };
 
   const delegateTokens = async () => {
     try {
+      setLoading(true);
       const signer = await provider.getSigner();
       const tokenContract = new Contract(GovTokenAddr, TokenAbi, signer);
-      const tx = await tokenContract.delegate(delegateAddress || await signer.getAddress());
+      const tx = await tokenContract.delegate(delegateAddress || userAddress);
       await tx.wait();
-      alert('Tokens delegated successfully!');
-    } catch (error) {
-      alert('Error delegating tokens: ' + error.message);
+      setSuccess("Tokens delegated successfully!");
+    } catch (err) {
+      setError("Failed to delegate tokens: " + err.message);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const getTokenBalance = async (address) => {
+    try {
+      const tokenContract = new Contract(GovTokenAddr, TokenAbi, provider);
+      const balance = await tokenContract.balanceOf(address);
+      setTokenBalance(balance.toString());
+    } catch (err) {
+      console.error("Failed to get token balance:", err);
     }
   };
 
   // Role Management Functions
   const grantProposerRole = async () => {
     try {
+      setLoading(true);
       const signer = await provider.getSigner();
       const timeLockContract = new Contract(TimeLockAddr, TimeLockAbi, signer);
       const PROPOSER_ROLE = await timeLockContract.PROPOSER_ROLE();
       const tx = await timeLockContract.grantRole(PROPOSER_ROLE, proposerRole);
       await tx.wait();
-      alert('Proposer role granted successfully!');
-    } catch (error) {
-      alert('Error granting proposer role: ' + error.message);
+      setSuccess("Proposer role granted successfully!");
+    } catch (err) {
+      setError("Failed to grant proposer role: " + err.message);
+    } finally {
+      setLoading(false);
     }
   };
 
   const grantExecutorRole = async () => {
     try {
+      setLoading(true);
       const signer = await provider.getSigner();
       const timeLockContract = new Contract(TimeLockAddr, TimeLockAbi, signer);
       const EXECUTOR_ROLE = await timeLockContract.EXECUTOR_ROLE();
       const tx = await timeLockContract.grantRole(EXECUTOR_ROLE, executorRole);
       await tx.wait();
-      alert('Executor role granted successfully!');
-    } catch (error) {
-      alert('Error granting executor role: ' + error.message);
+      setSuccess("Executor role granted successfully!");
+    } catch (err) {
+      setError("Failed to grant executor role: " + err.message);
+    } finally {
+      setLoading(false);
     }
   };
 
   const checkAdminStatus = async (address) => {
     try {
-      const signer = await provider.getSigner();
-      const timeLockContract = new Contract(TimeLockAddr, TimeLockAbi, signer);
+      const timeLockContract = new Contract(TimeLockAddr, TimeLockAbi, provider);
       const ADMIN_ROLE = await timeLockContract.DEFAULT_ADMIN_ROLE();
-      const isUserAdmin = await timeLockContract.hasRole(ADMIN_ROLE, address);
-      setIsAdmin(isUserAdmin);
-    } catch (error) {
-      console.error('Error checking admin status:', error);
+      const hasRole = await timeLockContract.hasRole(ADMIN_ROLE, address);
+      setIsAdmin(hasRole);
+    } catch (err) {
+      console.error("Failed to check admin status:", err);
     }
   };
 
-  const handleSubmit = async (event) => {
-    const signer = await provider.getSigner();
-    const Govinstance = new Contract(MyGovernorAddr, Govabi, signer);
-    const Certinstance = new Contract(CertAddr, Certabi, signer);
-
-    let paramsArray = [104, "An", "EDP", "A", "25th June"];
-
-    const transferCalldata = Certinstance.interface.encodeFunctionData(
-      "issue",
-      paramsArray
-    );
-
+  // Proposal Functions
+  const createProposal = async () => {
     try {
-      const proposeTx = await Govinstance.propose(
+      setLoading(true);
+      const signer = await provider.getSigner();
+      const govContract = new Contract(MyGovernorAddr, Govabi, signer);
+      const certContract = new Contract(CertAddr, Certabi, signer);
+
+      // Example parameters for certificate issuance
+      const params = JSON.parse(proposalParams);
+      const calldata = certContract.interface.encodeFunctionData(proposalFunction, params);
+
+      const tx = await govContract.propose(
         [CertAddr],
         [0],
-        [transferCalldata],
-        pDescription
+        [calldata],
+        proposalDescription
       );
-      await proposeTx.wait();
-      console.log("Proposal transaction successful:", proposeTx.hash);
-      getEvents();
-      handleClose();
-    } catch (error) {
-      console.error("Error proposing transaction:", error);
+      await tx.wait();
+      setSuccess("Proposal created successfully!");
+      setNewProposalOpen(false);
+      await getProposals();
+    } catch (err) {
+      setError("Failed to create proposal: " + err.message);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const getProposals = async () => {
+    try {
+      const govContract = new Contract(MyGovernorAddr, Govabi, provider);
+      const filter = govContract.filters.ProposalCreated();
+      const events = await govContract.queryFilter(filter);
+      
+      const proposalDetails = await Promise.all(events.map(async (event) => {
+        const state = await govContract.state(event.args[0]);
+        return {
+          id: event.args[0].toString(),
+          description: event.args[8],
+          state: ['Pending', 'Active', 'Canceled', 'Defeated', 'Succeeded', 'Queued', 'Expired', 'Executed'][state]
+        };
+      }));
+      
+      setProposals(proposalDetails);
+    } catch (err) {
+      console.error("Failed to get proposals:", err);
     }
   };
 
   const castVote = async (proposalId, support) => {
     try {
+      setLoading(true);
       const signer = await provider.getSigner();
-      const Govinstance = new Contract(MyGovernorAddr, Govabi, signer);
-      const tx = await Govinstance.castVote(proposalId, support);
+      const govContract = new Contract(MyGovernorAddr, Govabi, signer);
+      const tx = await govContract.castVote(proposalId, support);
       await tx.wait();
-      alert('Vote cast successfully!');
-      getProposalState(proposalId);
-    } catch (error) {
-      alert('Error casting vote: ' + error.message);
+      setSuccess("Vote cast successfully!");
+      await getProposals();
+    } catch (err) {
+      setError("Failed to cast vote: " + err.message);
+    } finally {
+      setLoading(false);
     }
   };
 
-  const queueProposal = async (proposalId) => {
+  const queueProposal = async (proposalId, description) => {
     try {
+      setLoading(true);
       const signer = await provider.getSigner();
-      const Govinstance = new Contract(MyGovernorAddr, Govabi, signer);
-      const descriptionHash = id(proposals.find(p => p[0] === proposalId)[1]);
-      const tx = await Govinstance.queue(
+      const govContract = new Contract(MyGovernorAddr, Govabi, signer);
+      const descriptionHash = id(description);
+      const tx = await govContract.queue(
         [CertAddr],
         [0],
         ["0x"],
         descriptionHash
       );
       await tx.wait();
-      alert('Proposal queued successfully!');
-      getProposalState(proposalId);
-    } catch (error) {
-      alert('Error queueing proposal: ' + error.message);
+      setSuccess("Proposal queued successfully!");
+      await getProposals();
+    } catch (err) {
+      setError("Failed to queue proposal: " + err.message);
+    } finally {
+      setLoading(false);
     }
   };
 
-  const executeProposal = async (proposalId) => {
+  const executeProposal = async (proposalId, description) => {
     try {
+      setLoading(true);
       const signer = await provider.getSigner();
-      const Govinstance = new Contract(MyGovernorAddr, Govabi, signer);
-      const descriptionHash = id(proposals.find(p => p[0] === proposalId)[1]);
-      const tx = await Govinstance.execute(
+      const govContract = new Contract(MyGovernorAddr, Govabi, signer);
+      const descriptionHash = id(description);
+      const tx = await govContract.execute(
         [CertAddr],
         [0],
         ["0x"],
         descriptionHash
       );
       await tx.wait();
-      alert('Proposal executed successfully!');
-      getProposalState(proposalId);
-    } catch (error) {
-      alert('Error executing proposal: ' + error.message);
+      setSuccess("Proposal executed successfully!");
+      await getProposals();
+    } catch (err) {
+      setError("Failed to execute proposal: " + err.message);
+    } finally {
+      setLoading(false);
     }
   };
 
-  const getProposalState = async (proposalId) => {
-    try {
-      const signer = await provider.getSigner();
-      const Govinstance = new Contract(MyGovernorAddr, Govabi, signer);
-      const state = await Govinstance.state(proposalId);
-      const states = ['Pending', 'Active', 'Canceled', 'Defeated', 'Succeeded', 'Queued', 'Expired', 'Executed'];
-      return states[state];
-    } catch (error) {
-      console.error('Error getting proposal state:', error);
-      return 'Unknown';
-    }
-  };
-
-  const getEvents = async (event) => {
-    let eventlogs = [];
-
-    const signer = await provider.getSigner();
-    const Govinstance = new Contract(MyGovernorAddr, Govabi, signer);
-
-    const filter = Govinstance.filters.ProposalCreated();
-    const events = await Govinstance.queryFilter(filter);
-    console.log("ProposalCreated events:", events);
-
-    events.forEach((event) => {
-      eventlogs.push([event.args[0].toString(), event.args[8]]);
-    });
-    setProposals(eventlogs);
-    console.log(eventlogs);
-  };
-
+  // Certificate Functions
   const getCertificates = async () => {
     try {
-      const signer = await provider.getSigner();
-      const Certinstance = new Contract(CertAddr, Certabi, signer);
-      const filter = Certinstance.filters.CertificateIssued();
-      const events = await Certinstance.queryFilter(filter);
-      const certs = await Promise.all(events.map(async (event) => {
-        const cert = await Certinstance.certificates(event.args.certificateId);
+      const certContract = new Contract(CertAddr, Certabi, provider);
+      const filter = certContract.filters.CertificateIssued();
+      const events = await certContract.queryFilter(filter);
+      const certDetails = await Promise.all(events.map(async (event) => {
+        const cert = await certContract.certificates(event.args.certificateId);
         return {
           id: event.args.certificateId.toString(),
           name: cert.name,
@@ -252,398 +314,296 @@ function App() {
           date: cert.date
         };
       }));
-      setCertificates(certs);
-    } catch (error) {
-      console.error('Error getting certificates:', error);
+      setCertificates(certDetails);
+    } catch (err) {
+      console.error("Failed to get certificates:", err);
     }
   };
 
-  async function connectMetaMask() {
-    const signer = await provider.getSigner();
-    alert(`Successfully Connected ${signer.address}`);
-    setLoginState("Connected");
-    setUserAddress(signer.address);
-    checkAdminStatus(signer.address);
-  }
-
-  const [open, setOpen] = React.useState(false);
-
-  const handleClickOpen = () => {
-    setOpen(true);
-  };
-
-  const handleClose = () => {
-    setOpen(false);
-  };
-
-  const handlePDesChange = (event) => {
-    setPDescription(event.target.value);
-  };
+  // Effect Hooks
+  useEffect(() => {
+    getProposals();
+    getCertificates();
+  }, []);
 
   return (
-    <>
-      <Box sx={{ flexGrow: 1 }}>
-        <AppBar position="static">
-          <Toolbar>
-            <IconButton
-              size="large"
-              edge="start"
-              color="inherit"
-              aria-label="menu"
-              sx={{ mr: 2 }}
-            >
-              <MenuIcon />
-            </IconButton>
-            <Typography variant="h6" component="div" sx={{ flexGrow: 1 }}>
-              DAO: Certi App
-            </Typography>
-            <Button color="inherit" onClick={connectMetaMask}>
-              <b>{loginState}</b>
-            </Button>
-          </Toolbar>
-        </AppBar>
-      </Box>
-      <br />
-      
-      {/* Token Management Section */}
-      {isAdmin && (
-        <Box sx={{ mb: 4, p: 2, border: '1px solid #ccc', borderRadius: 2 }}>
-          <Typography variant="h6">Token Management (Admin Only)</Typography>
-          <Grid container spacing={2} alignItems="center">
-            <Grid item xs={12} sm={6}>
-              <TextField
-                fullWidth
-                label="Address to Mint"
-                value={userAddress}
-                onChange={(e) => setUserAddress(e.target.value)}
-              />
-            </Grid>
-            <Grid item xs={12} sm={6}>
-              <TextField
-                fullWidth
-                label="Amount to Mint"
-                type="number"
-                value={mintAmount}
-                onChange={(e) => setMintAmount(e.target.value)}
-              />
-            </Grid>
-            <Grid item xs={12}>
-              <Button variant="contained" onClick={mintTokens}>Mint Tokens</Button>
-            </Grid>
-          </Grid>
-        </Box>
-      )}
+    <Box sx={{ flexGrow: 1 }}>
+      {/* App Bar */}
+      <AppBar position="static" sx={{ mb: 3 }}>
+        <Toolbar>
+          <Typography variant="h6" component="div" sx={{ flexGrow: 1 }}>
+            DAO Certificate Manager
+          </Typography>
+          <Button color="inherit" onClick={connectWallet} disabled={loading}>
+            {loading ? <CircularProgress size={24} color="inherit" /> : loginState}
+          </Button>
+        </Toolbar>
+      </AppBar>
 
-      {/* Token Delegation Section */}
-      <Box sx={{ mb: 4, p: 2, border: '1px solid #ccc', borderRadius: 2 }}>
-        <Typography variant="h6">Token Delegation</Typography>
-        <Grid container spacing={2} alignItems="center">
-          <Grid item xs={12}>
-            <TextField
-              fullWidth
-              label="Delegate Address (leave empty to self-delegate)"
-              value={delegateAddress}
-              onChange={(e) => setDelegateAddress(e.target.value)}
-            />
-          </Grid>
-          <Grid item xs={12}>
-            <Button variant="contained" onClick={delegateTokens}>Delegate Tokens</Button>
-          </Grid>
-        </Grid>
-      </Box>
+      <Container>
+        {/* Alerts */}
+        {error && (
+          <Alert severity="error" sx={{ mb: 2 }} onClose={() => setError("")}>
+            {error}
+          </Alert>
+        )}
+        {success && (
+          <Alert severity="success" sx={{ mb: 2 }} onClose={() => setSuccess("")}>
+            {success}
+          </Alert>
+        )}
 
-      {/* Role Management Section */}
-      {isAdmin && (
-        <Box sx={{ mb: 4, p: 2, border: '1px solid #ccc', borderRadius: 2 }}>
-          <Typography variant="h6">Role Management (Admin Only)</Typography>
-          <Grid container spacing={2}>
-            <Grid item xs={12} sm={6}>
-              <TextField
-                fullWidth
-                label="Address for Proposer Role"
-                value={proposerRole}
-                onChange={(e) => setProposerRole(e.target.value)}
-              />
-              <Button variant="contained" onClick={grantProposerRole} sx={{ mt: 1 }}>
-                Grant Proposer Role
-              </Button>
-            </Grid>
-            <Grid item xs={12} sm={6}>
-              <TextField
-                fullWidth
-                label="Address for Executor Role"
-                value={executorRole}
-                onChange={(e) => setExecutorRole(e.target.value)}
-              />
-              <Button variant="contained" onClick={grantExecutorRole} sx={{ mt: 1 }}>
-                Grant Executor Role
-              </Button>
-            </Grid>
-          </Grid>
-        </Box>
-      )}
+        {/* Main Content */}
+        <Paper sx={{ mb: 3 }}>
+          <Tabs value={tabValue} onChange={(e, newValue) => setTabValue(newValue)} centered>
+            <Tab label="Dashboard" />
+            <Tab label="Proposals" />
+            <Tab label="Certificates" />
+            {isAdmin && <Tab label="Admin" />}
+          </Tabs>
 
-      <Button variant="outlined" onClick={handleClickOpen}>
-        New Proposal
-      </Button>
-      <Button
-        style={{ marginLeft: "5px" }}
-        variant="outlined"
-        onClick={getEvents}
-      >
-        Refresh Proposals
-      </Button>
-      <Button
-        style={{ marginLeft: "5px" }}
-        variant="outlined"
-        onClick={getCertificates}
-      >
-        View Certificates
-      </Button>
-
-      {/* Certificates Section */}
-      <Box sx={{ mt: 4 }}>
-        <Typography variant="h6">Issued Certificates</Typography>
-        <Grid container spacing={2}>
-          {certificates.map((cert) => (
-            <Grid item xs={12} sm={6} md={4} key={cert.id}>
-              <Card>
-                <CardContent>
-                  <Typography variant="h6">Certificate #{cert.id}</Typography>
-                  <Typography>Name: {cert.name}</Typography>
-                  <Typography>Course: {cert.course}</Typography>
-                  <Typography>Grade: {cert.grade}</Typography>
-                  <Typography>Date: {cert.date}</Typography>
-                </CardContent>
-              </Card>
-            </Grid>
-          ))}
-        </Grid>
-      </Box>
-
-      <h2>Active Proposals</h2>
-      <div
-        style={{
-          border: "2px solid blue",
-          padding: "10px",
-          borderRadius: "25px",
-          marginTop: "20px",
-          marginBottom: "20px",
-        }}
-      >
-        <Box sx={{ flexGrow: 1 }}>
-          <Grid
-            container
-            spacing={{ xs: 2, md: 3 }}
-            columns={{ xs: 4, sm: 8, md: 12 }}
-          >
-            {proposals.map((proposal, index) => (
-              <Grid item xs={2} sm={4} md={4}>
-                <Card sx={{ minWidth: 275 }}>
-                  <CardContent>
-                    <Typography component="div" paragraph style={{ wordWrap: 'break-word' }}>
-                      <b>Proposal ID: </b>
-                      {proposal[0]}
-                    </Typography>
-
-                    <Typography variant="body2">{proposal[1]}</Typography>
-                  </CardContent>
-                  <CardActions>
-                    <Button variant="contained">Active</Button>
-                    <Button variant="contained" onClick={() => castVote(proposal[0], 1)}>Vote For</Button>
-                    <Button variant="contained" onClick={() => castVote(proposal[0], 0)}>Vote Against</Button>
-                    <Button variant="contained" onClick={() => queueProposal(proposal[0])}>Queue</Button>
-                    <Button variant="contained" onClick={() => executeProposal(proposal[0])}>Execute</Button>
-                  </CardActions>
-                </Card>
+          {/* Dashboard Tab */}
+          <TabPanel value={tabValue} index={0}>
+            <Grid container spacing={3}>
+              <Grid item xs={12}>
+                <Paper sx={{ p: 2 }}>
+                  <Typography variant="h6" gutterBottom>
+                    Your DAO Token Balance: {tokenBalance}
+                  </Typography>
+                  <Box sx={{ mt: 2 }}>
+                    <TextField
+                      fullWidth
+                      label="Delegate Address (optional)"
+                      value={delegateAddress}
+                      onChange={(e) => setDelegateAddress(e.target.value)}
+                      sx={{ mb: 2 }}
+                    />
+                    <Button
+                      variant="contained"
+                      onClick={delegateTokens}
+                      disabled={loading || !userAddress}
+                    >
+                      Delegate Tokens
+                    </Button>
+                  </Box>
+                </Paper>
               </Grid>
-            ))}
-          </Grid>
-        </Box>
-      </div>
+            </Grid>
+          </TabPanel>
 
-      <h2>All Proposals</h2>
-      <div
-        style={{
-          border: "2px solid blue",
-          padding: "10px",
-          borderRadius: "25px",
-          marginTop: "20px",
-          marginBottom: "20px",
-        }}
-      >
-        <Accordion defaultExpanded>
-          <AccordionSummary
-            expandIcon={<ArrowDownwardIcon />}
-            aria-controls="panel1-content"
-            id="panel1-header"
-          >
-            <div
-              style={{
-                display: "flex",
-                justifyContent: "space-between",
-                width: "90%",
-              }}
-            >
-              <Typography>
-                <b>Proposal ID: </b>
-                40113249118907347497846265566344225737199931284307161947685216366528597413334
-              </Typography>
-              <Chip label="Success" color="primary" />
-            </div>
-          </AccordionSummary>
-          <AccordionDetails>
-            <Typography>Proposal #1: Issue certificate 101</Typography>
-          </AccordionDetails>
-        </Accordion>
-        <Accordion defaultExpanded>
-          <AccordionSummary
-            expandIcon={<ArrowDownwardIcon />}
-            aria-controls="panel1-content"
-            id="panel1-header"
-          >
-            <div
-              style={{
-                display: "flex",
-                justifyContent: "space-between",
-                width: "90%",
-              }}
-            >
-              <Typography>
-                <b>Proposal ID: </b>
-                40113249118907347497846265566344225737199931284307161947685216366528597413334
-              </Typography>
-              <Chip label="Success" color="primary" />
-            </div>
-          </AccordionSummary>
-          <AccordionDetails>
-            <Typography>Proposal #2: Issue certificate 102</Typography>
-          </AccordionDetails>
-        </Accordion>
-        <Accordion defaultExpanded>
-          <AccordionSummary
-            expandIcon={<ArrowDownwardIcon />}
-            aria-controls="panel1-content"
-            id="panel1-header"
-          >
-            <div
-              style={{
-                display: "flex",
-                justifyContent: "space-between",
-                width: "90%",
-              }}
-            >
-              <Typography>
-                <b>Proposal ID: </b>
-                40113249118907347497846265566344225737199931284307161947685216366528597413334
-              </Typography>
-              <Chip label="Success" color="primary" />
-            </div>
-          </AccordionSummary>
-          <AccordionDetails>
-            <Typography>Proposal #3: Issue certificate 104</Typography>
-          </AccordionDetails>
-        </Accordion>
-        <Accordion defaultExpanded>
-          <AccordionSummary
-            expandIcon={<ArrowDownwardIcon />}
-            aria-controls="panel1-content"
-            id="panel1-header"
-          >
-            <div
-              style={{
-                display: "flex",
-                justifyContent: "space-between",
-                width: "90%",
-              }}
-            >
-              <Typography>
-                <b>Proposal ID: </b>
-                40113249118907347497846265566344225737199931284307161947685216366528597413334
-              </Typography>
-              <Chip label="Success" color="primary" />
-            </div>
-          </AccordionSummary>
-          <AccordionDetails>
-            <Typography>Proposal #4: Issue certificate 104</Typography>
-          </AccordionDetails>
-        </Accordion>
-      </div>
-      <React.Fragment>
-        <Dialog
-          open={open}
-          onClose={handleClose}
-          PaperProps={{
-            component: "form",
-            onSubmit: (event) => {
-              event.preventDefault();
-              const formData = new FormData(event.currentTarget);
-              const formJson = Object.fromEntries(formData.entries());
-              const email = formJson.email;
-              console.log(email);
-              handleClose();
-            },
-          }}
-        >
-          <DialogTitle>New Proposal</DialogTitle>
+          {/* Proposals Tab */}
+          <TabPanel value={tabValue} index={1}>
+            <Box sx={{ mb: 2 }}>
+              <Button
+                variant="contained"
+                onClick={() => setNewProposalOpen(true)}
+                disabled={loading || !userAddress}
+              >
+                Create New Proposal
+              </Button>
+            </Box>
+            <Grid container spacing={3}>
+              {proposals.map((proposal) => (
+                <Grid item xs={12} key={proposal.id}>
+                  <Card>
+                    <CardContent>
+                      <Typography variant="h6" gutterBottom>
+                        Proposal #{proposal.id.slice(0, 8)}...
+                      </Typography>
+                      <Typography color="textSecondary" gutterBottom>
+                        {proposal.description}
+                      </Typography>
+                      <Chip
+                        label={proposal.state}
+                        color={
+                          proposal.state === "Active" ? "primary" :
+                          proposal.state === "Succeeded" ? "success" :
+                          proposal.state === "Executed" ? "secondary" :
+                          "default"
+                        }
+                        sx={{ mt: 1 }}
+                      />
+                    </CardContent>
+                    <CardActions>
+                      {proposal.state === "Active" && (
+                        <>
+                          <Button size="small" onClick={() => castVote(proposal.id, 1)}>
+                            Vote For
+                          </Button>
+                          <Button size="small" onClick={() => castVote(proposal.id, 0)}>
+                            Vote Against
+                          </Button>
+                        </>
+                      )}
+                      {proposal.state === "Succeeded" && (
+                        <Button size="small" onClick={() => queueProposal(proposal.id, proposal.description)}>
+                          Queue
+                        </Button>
+                      )}
+                      {proposal.state === "Queued" && (
+                        <Button size="small" onClick={() => executeProposal(proposal.id, proposal.description)}>
+                          Execute
+                        </Button>
+                      )}
+                    </CardActions>
+                  </Card>
+                </Grid>
+              ))}
+            </Grid>
+          </TabPanel>
+
+          {/* Certificates Tab */}
+          <TabPanel value={tabValue} index={2}>
+            <Grid container spacing={3}>
+              {certificates.map((cert) => (
+                <Grid item xs={12} sm={6} md={4} key={cert.id}>
+                  <Card>
+                    <CardContent>
+                      <Typography variant="h6" gutterBottom>
+                        Certificate #{cert.id}
+                      </Typography>
+                      <Typography><strong>Name:</strong> {cert.name}</Typography>
+                      <Typography><strong>Course:</strong> {cert.course}</Typography>
+                      <Typography><strong>Grade:</strong> {cert.grade}</Typography>
+                      <Typography><strong>Date:</strong> {cert.date}</Typography>
+                    </CardContent>
+                  </Card>
+                </Grid>
+              ))}
+            </Grid>
+          </TabPanel>
+
+          {/* Admin Tab */}
+          {isAdmin && (
+            <TabPanel value={tabValue} index={3}>
+              <Grid container spacing={3}>
+                <Grid item xs={12}>
+                  <Paper sx={{ p: 2 }}>
+                    <Typography variant="h6" gutterBottom>
+                      Token Management
+                    </Typography>
+                    <Grid container spacing={2}>
+                      <Grid item xs={12} sm={6}>
+                        <TextField
+                          fullWidth
+                          label="Address to Mint"
+                          value={mintToAddress}
+                          onChange={(e) => setMintToAddress(e.target.value)}
+                        />
+                      </Grid>
+                      <Grid item xs={12} sm={6}>
+                        <TextField
+                          fullWidth
+                          label="Amount to Mint"
+                          type="number"
+                          value={mintAmount}
+                          onChange={(e) => setMintAmount(e.target.value)}
+                        />
+                      </Grid>
+                      <Grid item xs={12}>
+                        <Button
+                          variant="contained"
+                          onClick={mintTokens}
+                          disabled={loading}
+                        >
+                          Mint Tokens
+                        </Button>
+                      </Grid>
+                    </Grid>
+                  </Paper>
+                </Grid>
+
+                <Grid item xs={12}>
+                  <Paper sx={{ p: 2 }}>
+                    <Typography variant="h6" gutterBottom>
+                      Role Management
+                    </Typography>
+                    <Grid container spacing={2}>
+                      <Grid item xs={12} sm={6}>
+                        <TextField
+                          fullWidth
+                          label="Address for Proposer Role"
+                          value={proposerRole}
+                          onChange={(e) => setProposerRole(e.target.value)}
+                        />
+                        <Button
+                          variant="contained"
+                          onClick={grantProposerRole}
+                          disabled={loading}
+                          sx={{ mt: 1 }}
+                        >
+                          Grant Proposer Role
+                        </Button>
+                      </Grid>
+                      <Grid item xs={12} sm={6}>
+                        <TextField
+                          fullWidth
+                          label="Address for Executor Role"
+                          value={executorRole}
+                          onChange={(e) => setExecutorRole(e.target.value)}
+                        />
+                        <Button
+                          variant="contained"
+                          onClick={grantExecutorRole}
+                          disabled={loading}
+                          sx={{ mt: 1 }}
+                        >
+                          Grant Executor Role
+                        </Button>
+                      </Grid>
+                    </Grid>
+                  </Paper>
+                </Grid>
+              </Grid>
+            </TabPanel>
+          )}
+        </Paper>
+
+        {/* New Proposal Dialog */}
+        <Dialog open={newProposalOpen} onClose={() => setNewProposalOpen(false)}>
+          <DialogTitle>Create New Proposal</DialogTitle>
           <DialogContent>
             <DialogContentText>
-              Enter the details for a new proposal
+              Enter the details for your new proposal
             </DialogContentText>
-            <br />
-            <Select
-              labelId="demo-simple-select-label"
-              id="demo-simple-select"
-              value="Function to Execute"
-              // onChange={handleChange}
-            >
-              <MenuItem value="Function to Execute">
-                Function to Execute
-              </MenuItem>
-              <MenuItem value="issue">issue</MenuItem>
-            </Select>
+            <FormControl fullWidth sx={{ mt: 2 }}>
+              <InputLabel>Function</InputLabel>
+              <Select
+                value={proposalFunction}
+                onChange={(e) => setProposalFunction(e.target.value)}
+                label="Function"
+              >
+                <MenuItem value="issue">Issue Certificate</MenuItem>
+              </Select>
+            </FormControl>
             <TextField
-              autoFocus
-              required
-              margin="dense"
-              id="name"
-              name="email"
-              label="Details of the Function to Execute"
-              type="email"
-              fullWidth
-              variant="standard"
-            />
-            <TextField
-              autoFocus
-              required
-              margin="dense"
-              id="name"
-              name="email"
-              label="Address of the contract"
-              type="email"
-              fullWidth
-              variant="standard"
-            />
-            <TextField
-              autoFocus
-              required
-              margin="dense"
               id="name"
               name="email"
               label="Description"
               type="email"
               fullWidth
               variant="standard"
-              onChange={handlePDesChange}
+              onChange={(e) => setProposalDescription(e.target.value)}
+            />
+            <TextField
+              fullWidth
+              label="Parameters (JSON array)"
+              value={proposalParams}
+              onChange={(e) => setProposalParams(e.target.value)}
+              multiline
+              rows={2}
+              sx={{ mt: 2 }}
             />
           </DialogContent>
           <DialogActions>
-            <Button onClick={handleClose}>Cancel</Button>
-            <Button onClick={handleSubmit}>Submit</Button>
+            <Button onClick={() => setNewProposalOpen(false)}>Cancel</Button>
+            <Button onClick={createProposal} disabled={loading}>
+              Create
+            </Button>
           </DialogActions>
         </Dialog>
-      </React.Fragment>
-    </>
+      </Container>
+    </Box>
   );
 }
 
